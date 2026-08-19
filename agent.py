@@ -12,9 +12,6 @@ Architecture:
   - asyncpg ledger → Neon Postgres
   - Rule-based post-call audit classifier
 
-Reference patterns:
-  - medical_office_triage (livekit-examples): multi-agent handoff with context preservation
-  - Your sales agent: AgentServer, TurnHandlingOptions, room_io, ai_coustics, EndCallTool
 """
 
 import json
@@ -290,7 +287,7 @@ class CallData:
     days_delinquent: int = 180
     consumer_name: str = ""
     consumer_phone: str = ""
-    expected_last_4_ssn: str = ""  # TODO(Corafone): populate from participant_attributes
+    expected_last_4_ssn: str = ""  # Opender turns text into numbers for verify_identity
     expected_dob: str = ""  # format MM/DD/YYYY
 
     # ── Mutable call state ──
@@ -858,9 +855,7 @@ async def entrypoint(ctx: JobContext):
     )
 
     # ── Start with Opener ──
-    # NOTE: session.start() is non-blocking in the AgentServer API.
-    # It returns immediately; the session runs until the participant disconnects.
-    # Post-call audit (Phase 5) is deferred — will be added via shutdown callback later.
+    # NOTE: session.start() is non-blocking in the AgentServer API. will add end call logic another time.
     await session.start(
         agent=opener,
         room=ctx.room,
