@@ -2,7 +2,15 @@
 
 A self-contained Next.js 14 application that connects consumers to the `corafone-collector` LiveKit AI agent for debt collection calls.
 
-This directory is **portable** — you can zip it, hand it to another team, and it will work with no references to the parent repository.
+
+## Assumptions
+
+
+I assume that the initiation of the calls with be from the consumer to the agent since the problem statement says "Your agent calls them", but the delivery says "We will call it ...". To comply with USA regulations there is a mini-miranda stated, then an agent verifies the consumer. But this is not a perfect way to handle this, because the consumer calling might not be the debtor. This is a known problem and I assume the debtor calls.
+
+I assume debt collection to be higher risk when one agent does verification and negotiation, so I made them separate to avoid negotiation before verification using a low quality mode instead of Claude Opus or Sonnet.
+
+I assume many cases can occur where the consumer gets agitated so I made an excalation agent to handle all unknown edge cases.
 
 ---
 
@@ -110,11 +118,4 @@ The `corafone-collector` agent (`agent.py`) is **not** deployed through Vercel. 
 lk agent deploy
 ```
 
-See the [LiveKit Agents docs](https://docs.livekit.io/agents/) for details.
 
----
-
-## Support
-
-This app was generated from the [livekit-voice-agent skill](.opencode/skills/livekit-voice-agent/SKILL.md) (if present in the parent repo).
-# corafone-test
