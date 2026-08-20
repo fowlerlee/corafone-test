@@ -287,7 +287,7 @@ class CallData:
     days_delinquent: int = 180
     consumer_name: str = ""
     consumer_phone: str = ""
-    expected_last_4_ssn: str = ""  # Opender turns text into numbers for verify_identity
+    expected_last_4_ssn: str = ""  # TODO(Corafone): populate from participant_attributes
     expected_dob: str = ""  # format MM/DD/YYYY
 
     # ── Mutable call state ──
@@ -296,6 +296,8 @@ class CallData:
     validated_plan: Optional[dict] = None  # set ONLY by validate_proposal on ok=True
     dispute_raised: bool = False
     rejection_count: int = 0
+    validate_call_count: int = 0         # Negotiator: count of validate_proposal calls
+    verify_identity_call_count: int = 0  # Opener: count of verify_identity calls
     current_agent_name: str = "opener"
     call_ended: bool = False
 
@@ -432,6 +434,7 @@ you have heard the consumer speak both values.
 
 If verify_identity succeeds, say "you are now being transferred to settle your bill" immediately call to_negotiator.
 If verify_identity fails, ask again.
+If verify_identity returns ESCALATE_NOW or tells you to escalate, you MUST call to_escalation with reason='stuck' immediately. Do not ask for identity again.
 
 You MUST NEVER state a dollar amount, offer a payment plan, or agree to any payment.
 If the consumer asks about payment options, say: "I'll connect you with our
@@ -464,7 +467,8 @@ Be calm, brief, and compliant. Never be aggressive.""",
     ) -> str:
         """Verify consumer identity by looking up name + last_4_ssn in the database."""
         userdata: CallData = context.userdata
-        logger.info(f"verify_identity CALLED: name='{name}', last_4_ssn='{last_4_ssn}', dob='{dob}'")
+        userdata.verify_identity_call_count += 1
+        logger.info(f"verify_identity CALLED (attempt #{userdata.verify_identity_call_count}): name='{name}', last_4_ssn='{last_4_ssn}', dob='{dob}'")
 
         if not userdata.db_pool:
             logger.warning("verify_identity: db_pool is None — DATABASE_URL not set on LiveKit Cloud")
@@ -503,6 +507,15 @@ Be calm, brief, and compliant. Never be aggressive.""",
             userdata.identity_verified = True
             logger.info(f"verify_identity: SUCCESS — identity_verified=True for '{row['consumer_name']}'")
             return f"Identity verified. Welcome, {row['consumer_name']}. You may now discuss the debt."
+
+        # ── Loop guard: force escalation after 3 failed attempts ──
+        if userdata.verify_identity_call_count >= 3:
+            logger.warning(f"verify_identity loop guard triggered after {userdata.verify_identity_call_count} attempts — forcing escalation")
+            return (
+                "ESCALATE_NOW: Identity verification has failed 3 times. "
+                "You MUST call to_escalation with reason='stuck' immediately. "
+                "Do NOT ask for identity again. Do NOT call verify_identity again."
+            )
 
         logger.warning(
             f"verify_identity: NO MATCH — name='{name.strip()}', normalized_ssn='{normalized_ssn}'. "
@@ -545,9 +558,19 @@ Be calm, brief, and compliant. Never be aggressive.""",
         return await self._transfer_to_agent("negotiator", context)
 
     @function_tool
-    async def to_escalation(self, context: RunContext_T) -> Agent:
+    async def to_escalation(
+        self,
+        context: RunContext_T,
+        reason: Annotated[Optional[str], Field(description="Reason for escalation: 'stuck', 'dispute', 'human_request', or 'all_offers_rejected'")] = None,
+    ) -> Agent:
         """Transfer to Escalation specialist."""
-        await self.session.say("I'll transfer you to our escalation specialist.")
+        if reason == "stuck":
+            await self.session.say(
+                "Sorry, I'm having a technical difficulty. "
+                "I will escalate this call to our escalation agent."
+            )
+        else:
+            await self.session.say("I'll transfer you to our escalation specialist.")
         return await self._transfer_to_agent("escalation", context)
 
     @function_tool
@@ -607,7 +630,11 @@ read the reasons aloud, then present the counter_offers in ranked order.
 If the consumer disputes, mentions lawyer/bankruptcy/DMP, or says 'stop calling',
 call log_dispute then to_escalation.
 
-Track rejections in state — do not rely on tool-call budget.""",
+Track rejections in state — do not rely on tool-call budget.
+
+9. If validate_proposal returns force_escalate=True or ESCALATE_NOW,
+   you MUST call to_escalation with reason='stuck' immediately.
+   This is mandatory and non-negotiable. Do NOT call validate_proposal again.""",
             tts=inference.TTS(model="inworld/inworld-tts-2", voice="Edward"),
         )
 
@@ -627,7 +654,22 @@ Track rejections in state — do not rely on tool-call budget.""",
         """Validate a consumer proposal. Sets validated_plan ONLY if ok=True.
         Returns next_action telling you what to do next."""
         userdata: CallData = context.userdata
+        userdata.validate_call_count += 1
+        logger.info(f"validate_proposal CALLED (attempt #{userdata.validate_call_count})")
+
         result = validate(type, schedule, cadence, userdata.principal)
+
+        # ── Loop guard: force escalation after 3 failed validations ──
+        if userdata.validate_call_count >= 3 and not result["ok"]:
+            logger.warning(f"validate_proposal loop guard triggered after {userdata.validate_call_count} attempts — forcing escalation")
+            result["force_escalate"] = True
+            result["next_action"] = (
+                "ESCALATE_NOW: You have attempted to validate 3 proposals without "
+                "reaching an agreement. You MUST call to_escalation with reason='stuck' immediately. "
+                "Do NOT call validate_proposal again. Do NOT present more offers."
+            )
+            return result
+
         if result["ok"]:
             userdata.validated_plan = {
                 "type": type,
@@ -681,8 +723,18 @@ Track rejections in state — do not rely on tool-call budget.""",
         return await self._transfer_to_agent("closer", context)
 
     @function_tool
-    async def to_escalation(self, context: RunContext_T) -> Agent:
-        await self.session.say("I'll transfer you to our escalation specialist.")
+    async def to_escalation(
+        self,
+        context: RunContext_T,
+        reason: Annotated[Optional[str], Field(description="Reason for escalation: 'stuck', 'dispute', 'human_request', or 'all_offers_rejected'")] = None,
+    ) -> Agent:
+        if reason == "stuck":
+            await self.session.say(
+                "Sorry, I'm having a technical difficulty. "
+                "I will escalate this call to our escalation agent."
+            )
+        else:
+            await self.session.say("I'll transfer you to our escalation specialist.")
         return await self._transfer_to_agent("escalation", context)
 
 
@@ -733,8 +785,18 @@ If they refuse to consent, call to_escalation.""",
         return await self._transfer_to_agent("negotiator", context)
 
     @function_tool
-    async def to_escalation(self, context: RunContext_T) -> Agent:
-        await self.session.say("I'll transfer you to our escalation specialist.")
+    async def to_escalation(
+        self,
+        context: RunContext_T,
+        reason: Annotated[Optional[str], Field(description="Reason for escalation: 'stuck', 'dispute', 'human_request', or 'all_offers_rejected'")] = None,
+    ) -> Agent:
+        if reason == "stuck":
+            await self.session.say(
+                "Sorry, I'm having a technical difficulty. "
+                "I will escalate this call to our escalation agent."
+            )
+        else:
+            await self.session.say("I'll transfer you to our escalation specialist.")
         return await self._transfer_to_agent("escalation", context)
 
 
